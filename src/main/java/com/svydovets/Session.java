@@ -1,5 +1,8 @@
 package com.svydovets;
 
+import com.svydovets.action.Action;
+import com.svydovets.action.DeleteAction;
+import com.svydovets.action.InsertAction;
 import com.svydovets.annotation.Column;
 import com.svydovets.annotation.Table;
 import com.svydovets.entity.EntityKey;
@@ -11,8 +14,12 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Statement;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedList;
 import java.util.Map;
+import java.util.Queue;
 import javax.sql.DataSource;
 
 @RequiredArgsConstructor
@@ -24,11 +31,43 @@ public class Session {
 
   private Map<EntityKey<?>, Object> cache = new HashMap<>();
 
+  private Queue<Action> actionQueue = new LinkedList<>();
+
   @SneakyThrows
   public <T> T find(Class<T> entityType, Object id) {
     var entityKey = new EntityKey<>(entityType, id);
     var entity = cache.computeIfAbsent(entityKey, this::loadFromDb);
     return entityType.cast(entity);
+  }
+
+  public void persist(Object entity) {
+    var insertAction = new InsertAction(entity);
+    actionQueue.add(insertAction);
+  }
+
+  public void remove(Object entity) {
+    var deleteAction = new DeleteAction(entity);
+    actionQueue.add(deleteAction);
+  }
+
+  public void flush() {
+    actionQueue.stream()
+        .sorted(Comparator.comparing(Action::getPriority))
+        .forEach(this::fire);
+  }
+
+  private void fire(Action action) {
+    try (Connection connection = dataSource.getConnection()) {
+      try (Statement statement = connection.createStatement()) {
+        var request = action.configureRequest();
+        System.out.println("REQUEST: " + request);
+        statement.execute(request);
+        actionQueue.remove(action);
+      }
+    } catch (SQLException e) {
+      e.printStackTrace();
+      throw new RuntimeException();
+    }
   }
 
   private <T> T loadFromDb(EntityKey<T> entityKey) {
@@ -66,6 +105,7 @@ public class Session {
   }
 
   public void close() {
+    flush();
     cache.clear();
   }
 }
